@@ -1,0 +1,2 @@
+{# Extract only the vrouter object from host_vars file to generate the virtual router YAML declaration #}
+    - {{ hostvars[item].vrouter | combine({'master_image': image_name}) | to_yaml | trim | indent(6) }}

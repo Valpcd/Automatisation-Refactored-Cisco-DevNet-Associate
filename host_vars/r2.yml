@@ -1,0 +1,44 @@
+---
+vrouter:
+  vm_name: r2
+  os: iosxe
+  master_image: "{{ image_name }}"
+  force_copy: false
+  tapnumlist: [117, 318, 315]
+
+interfaces:
+  - interface_type: GigabitEthernet
+    interface_id: 1
+    description: Management Interface (VLAN 60 DHCP)
+    enabled: true
+
+  - interface_type: GigabitEthernet
+    interface_id: 2
+    description: Trunk Interface
+    enabled: true
+    sub_interfaces:
+      - interface_type: GigabitEthernet
+        interface_id: 200 #####
+        interface_parent_id: 2
+        description: VLAN 519
+        vlan_id: 519
+        ipv4_address: "{{ inband_vlans[0].prefix4 }}.3{{ inband_vlans[0].mask4 }}"
+        ipv6_address: "{{ inband_vlans[0].prefix6 }}3{{ inband_vlans[0].mask6 }}"
+        ospf:
+          area_id: 0
+
+      - interface_type: GigabitEthernet
+        interface_id: 300 #####
+        interface_parent_id: 2
+        description: VLAN 518
+        vlan_id: 518
+        ipv4_address: "{{ inband_vlans[1].prefix4 }}.3{{ inband_vlans[1].mask4 }}"
+        ipv6_address: "{{ inband_vlans[1].prefix6 }}3{{ inband_vlans[1].mask6 }}"
+        ospf:
+          area_id: 0
+
+ospf:
+  process_id: 1
+  router_id: 2.2.2.2
+
+default_routes: "{{ inband_vlans[0].default_routes }}"

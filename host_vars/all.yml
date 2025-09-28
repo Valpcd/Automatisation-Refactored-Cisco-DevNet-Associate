@@ -1,0 +1,26 @@
+---
+inband_vlans: 
+  - vlan: 519 #R1 <-> R2
+    prefix4: 10.0.0
+    prefix6: "2001:db8:1::"
+    mask4: /24
+    mask6: /64
+    default_routes:
+      ipv4_next_hop: 10.0.0.1
+      ipv6_next_hop: "2001:db8:1::1"
+  - vlan: 518 #R2 <-> R3
+    prefix4: 10.0.1
+    prefix6: "2001:db8:2::"
+    mask4: /24
+    mask6: /64
+    default_routes: 
+      ipv4_next_hop: 10.0.1.1
+      ipv6_next_hop: "2001:db8:2::1"
+  - vlan: 517 #R3 <-> R1
+    prefix4: 10.0.2
+    prefix6: "2001:db8:3::"
+    mask4: /24
+    mask6: /64
+    default_routes:
+      ipv4_next_hop: 10.0.2.1
+      ipv6_next_hop: "2001:db8:3::1"

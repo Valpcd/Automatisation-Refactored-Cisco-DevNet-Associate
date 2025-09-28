@@ -1,0 +1,89 @@
+---
+# The purpose of this playbook is to prepare the lab environment for the VMs.
+# It performs the following steps:
+# 1. Check the permissions of the masters directory to determine if it is accessible.
+# 2. Ensure the required directories exist.
+# 3. Create symbolic links to the masters directory.
+# 4. Create the switch configuration file.
+# 5. Configure the hypervisor switch ports.
+# 6. Save and fetch the switch configuration output.
+# The playbook is executed on the hypervisors group of hosts.
+
+- name: PREPARE LAB ENVIRONMENT
+  vars_files:
+    - group_vars/all.yml
+  vars:
+    vm_base_dir: "{{ ansible_env.HOME }}/vm"
+    lab_dir: "{{ vm_base_dir }}/{{ lab_name }}"
+    masters_dir: /var/cache/kvm/masters
+
+  hosts: hypervisors
+
+  tasks:
+    - name: CHECK MASTERS DIRECTORY PERMISSIONS
+      ansible.builtin.shell: |
+        if [ -r "{{ masters_dir }}" ] && [ -x "{{ masters_dir }}" ]; then
+          exit 0
+        else
+          echo "Directory {{ masters_dir }} is not readable or executable"
+          exit 1
+        fi
+      changed_when: false
+      register: perms_check
+      failed_when: perms_check.rc != 0
+
+    - name: ENSURE REQUIRED DIRECTORIES EXIST
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ vm_base_dir }}"
+        - "{{ lab_dir }}"
+        - "{{ lab_dir }}/fragments"
+
+    - name: CREATE SYMBOLIC LINKS
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        src: "{{ item.src }}"
+        state: link
+        follow: false
+      loop:
+        - path: "{{ vm_base_dir }}/scripts"
+          src: "{{ masters_dir }}/scripts"
+        - path: "{{ ansible_env.HOME }}/masters"
+          src: "{{ masters_dir }}"
+
+    - name: CREATE YAML SWITCH CONFIGURATION
+      ansible.builtin.template:
+        src: templates/switch.yaml.j2
+        dest: "{{ lab_dir }}/switch.yaml"
+        mode: "0644"
+      loop: "{{ hostvars[inventory_hostname].switches }}"
+
+    - name: CONFIGURE HYPERVISOR SWITCH PORTS
+      ansible.builtin.command:
+        cmd: "{{ ansible_env.HOME }}/masters/scripts/switch-conf.py {{ lab_dir }}/switch.yaml"
+        chdir: "{{ lab_dir }}"
+      register: switch_conf_result
+      changed_when: "'changed to' in switch_conf_result.stdout"
+      failed_when: switch_conf_result.rc != 0
+
+    - name: SAVE AND FETCH SWITCH CONFIGURATION OUTPUT
+      block:
+        - name: SAVE SWITCH CONFIGURATION OUTPUT
+          ansible.builtin.copy:
+            content: "{{ switch_conf_result.stdout }}\n{{ switch_conf_result.stderr }}"
+            dest: "{{ lab_dir }}/switch-conf.log"
+            mode: "0644"
+
+        - name: FETCH SWITCH CONFIGURATION OUTPUT
+          ansible.builtin.fetch:
+            src: "{{ lab_dir }}/switch-conf.log"
+            dest: trace/switch-conf.log
+            flat: true
+            mode: "0644"
+      rescue:
+        - name: HANDLE ERROR IN SAVING OR FETCHING SWITCH CONFIGURATION OUTPUT
+          ansible.builtin.debug:
+            msg: An error occurred while saving or fetching the switch configuration output.

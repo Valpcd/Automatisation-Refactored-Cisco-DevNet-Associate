@@ -1,0 +1,122 @@
+---
+- name: DISCOVER ROUTER IP ADDRESSES
+  hosts: routers
+  gather_facts: false
+  tasks:
+    - name: Retrieve IP Addresses of Management Interfaces
+      cisco.ios.ios_command:
+        commands:
+          - "show ip interface brief"
+      register: ip_int_br
+
+    - name: Extract Management IP
+      set_fact:
+        mgmt_ip: "{{ ip_int_br.stdout[0] | regex_search('GigabitEthernet1\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)', '\\1') | first }}"
+
+    - name: Set ansible_host for dynamic inventory
+      add_host:
+        name: "{{ inventory_hostname }}"
+        ansible_host: "{{ mgmt_ip }}"
+
+    - name: DEBUG ROUTER IPS
+      ansible.builtin.debug:
+        msg: "Router {{ inventory_hostname }} has IP {{ mgmt_ip }}"
+
+- name: CONFIGURE OSPF ON ROUTERS
+  hosts: routers
+  gather_facts: false
+  collections:
+    - cisco.ios
+  vars_files:
+    - group_vars/all.yml
+    - host_vars/all.yml
+
+  tasks:
+    - name: CONFIGURE OSPF PROCESS
+      cisco.ios.ios_ospfv2:
+        config:
+          processes:
+            - process_id: "{{ ospf.process_id }}"
+              router_id: "{{ ospf.router_id }}"
+        state: merged
+
+    - name: GENERATE OSPF INTERFACES LIST
+      set_fact:
+        ospf_interfaces: >
+          {% set results = [] %}
+          {% for intf in interfaces %}
+            {% for sub in intf.sub_interfaces | default([]) %}
+              {% if sub.ospf is defined %}
+                {% set full_name = intf.interface_type ~ intf.interface_id | string ~ '.' ~ sub.interface_id | string %}
+                {{ results.append({
+                  'name': full_name,
+                  'area': sub.ospf.area_id
+                }) }}
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+          {{ results | to_json }}
+
+    - name: CONFIGURE OSPF ON INTERFACES
+      cisco.ios.ios_config:
+        lines:
+          - "ip ospf {{ ospf.process_id }} area {{ item.area }}"
+        parents: "interface {{ item.name }}"
+      loop: "{{ ospf_interfaces | from_json }}"
+
+    - name: WAIT FOR OSPF ADJACENCIES TO FORM
+      ansible.builtin.pause:
+        seconds: 60
+
+    - name: VERIFY OSPF NEIGHBORS
+      cisco.ios.ios_command:
+        commands:
+          - "show ip ospf neighbor"
+      register: ospf_output
+      failed_when: "'FULL' not in ospf_output.stdout[0]"
+
+    - name: VERIFY OSPF ROUTES IN ROUTING TABLE
+      cisco.ios.ios_command:
+        commands:
+          - "show ip route ospf"
+      register: ospf_routes
+      failed_when: >
+        ospf_routes.stdout[0] | length == 0 or
+        'O' not in ospf_routes.stdout[0]
+
+    - name: EXTRACT IP ADDRESSES FROM SUB-INTERFACES
+      set_fact:
+        router_ips: >
+          {{
+            {
+              'ipv4': {
+                '200': interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | selectattr('interface_id', 'equalto', 200) | map(attribute='ipv4_address') | first | regex_replace('/.*', ''),
+                '300': interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | selectattr('interface_id', 'equalto', 300) | map(attribute='ipv4_address') | first | regex_replace('/.*', '')
+              },
+              'ipv6': {
+                '200': interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | selectattr('interface_id', 'equalto', 200) | map(attribute='ipv6_address') | first | regex_replace('/.*', ''),
+                '300': interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | selectattr('interface_id', 'equalto', 300) | map(attribute='ipv6_address') | first | regex_replace('/.*', '')
+              }
+            }
+          }}
+
+    - name: DEBUG ROUTER IPS
+      ansible.builtin.debug:
+        var: router_ips
+
+    - name: TEST CONNECTIVITY BETWEEN OSPF ROUTERS
+      cisco.ios.ios_ping:
+        dest: "{{ item.dest }}"
+        source: "{{ item.source }}"
+        size: 56
+        count: 5
+      loop: "{{ ospf_connectivity_tests }}"
+      vars:
+        ospf_connectivity_tests:
+          - { dest: "{{ hostvars['r2']['router_ips']['ipv4']['200'] }}", source: "{{ router_ips['ipv4']['200'] }}" }  # R1 vers R2 (IPv4)
+          - { dest: "{{ hostvars['r3']['router_ips']['ipv4']['300'] }}", source: "{{ router_ips['ipv4']['300'] }}" }  # R1 vers R3 (IPv4)
+          - { dest: "{{ hostvars['r1']['router_ips']['ipv4']['200'] }}", source: "{{ router_ips['ipv4']['200'] }}" }  # R2 vers R1 (IPv4)
+          - { dest: "{{ hostvars['r3']['router_ips']['ipv4']['300'] }}", source: "{{ router_ips['ipv4']['300'] }}" }  # R2 vers R3 (IPv4)
+          - { dest: "{{ hostvars['r1']['router_ips']['ipv4']['300'] }}", source: "{{ router_ips['ipv4']['300'] }}" }  # R3 vers R1 (IPv4)
+          - { dest: "{{ hostvars['r2']['router_ips']['ipv4']['200'] }}", source: "{{ router_ips['ipv4']['200'] }}" }  # R3 vers R2 (IPv4)
+      ignore_errors: yes

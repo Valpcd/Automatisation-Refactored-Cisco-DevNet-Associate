@@ -1,0 +1,121 @@
+- name: CONFIGURE ROUTER INTERFACES AND IP ADDRESSING
+  gather_facts: false
+  vars_files:
+    - group_vars/all.yml
+    - host_vars/all.yml
+
+  hosts: routers
+
+  pre_tasks:
+    - name: WAIT FOR VMS TO BECOME ACCESSIBLE
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        sleep: 5
+        timeout: 300
+        connect_timeout: 5
+
+    - name: WAIT FOR SSH SERVICE
+      ansible.builtin.wait_for:
+        port: 22
+        state: started
+        timeout: 300
+
+    - name: GATHER FACTS
+      ansible.builtin.setup:
+      when: ansible_facts | length == 0
+
+  tasks:
+    - name: CONFIGURE HOSTNAME
+      cisco.ios.ios_system:
+        hostname: "{{ vrouter.vm_name }}"
+
+    - name: CONFIGURE MAIN INTERFACES
+      cisco.ios.ios_interfaces:
+        config:
+          - name: "{{ item.interface_type }}{{ item.interface_id }}"
+            description: "{{ item.description }}"
+            enabled: "{{ item.enabled }}"
+      with_items: "{{ interfaces }}"
+
+    - name: CREATE SUB-INTERFACES
+      cisco.ios.ios_interfaces:
+        config:
+          - name: "{{ item.interface_type }}{{ interface_parent_id }}.{{ item.interface_id }}"
+            description: "{{ item.description }}"
+            enabled: true
+      vars:
+        interface_parent_id: "{{ item.interface_parent_id | default(interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='interface_id') | first) }}"
+      with_items: "{{ interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | list }}"
+
+    - name: CONFIGURE DOT1Q ENCAPSULATION ON SUB-INTERFACES
+      cisco.ios.ios_config:
+        lines:
+          - "encapsulation dot1Q {{ item.vlan_id }}"
+        parents: "interface {{ item.interface_type }}{{ interface_parent_id }}.{{ item.interface_id }}"
+      vars:
+        interface_parent_id: "{{ item.interface_parent_id | default(interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='interface_id') | first) }}"
+      with_items: "{{ interfaces | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | list }}"
+      
+    - name: CONFIGURE IPv4 ADDRESSES
+      cisco.ios.ios_l3_interfaces:
+        config:
+          - name: >
+              {% if item.interface_parent_id is defined %}
+                {{ item.interface_type }}{{ item.interface_parent_id }}.{{ item.interface_id }}
+              {% else %}
+                {{ item.interface_type }}{{ item.interface_id }}
+              {% endif %}
+            ipv4:
+              - address: "{{ item.ipv4_address }}"
+      when: item.ipv4_address is defined and item.ipv4_address != 'dhcp'
+      with_items: >
+        {{
+          interfaces | selectattr('enabled', 'equalto', true) | selectattr('ipv4_address', 'defined') | list +
+          interfaces | selectattr('enabled', 'equalto', true) | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | selectattr('ipv4_address', 'defined') | list
+        }}
+
+    - name: CONFIGURE IPv6 ADDRESSES
+      cisco.ios.ios_l3_interfaces:
+        config:
+          - name: >
+              {% if item.interface_parent_id is defined %}
+                {{ item.interface_type }}{{ item.interface_parent_id }}.{{ item.interface_id }}
+              {% else %}
+                {{ item.interface_type }}{{ item.interface_id }}
+              {% endif %}
+            ipv6:
+              - address: "{{ item.ipv6_address }}"
+      when: item.ipv6_address is defined and item.ipv6_address != 'autoconfig'
+      with_items: >
+        {{
+          interfaces | selectattr('enabled', 'equalto', true) | selectattr('ipv6_address', 'defined') | list +
+          interfaces | selectattr('enabled', 'equalto', true) | selectattr('sub_interfaces', 'defined') | map(attribute='sub_interfaces') | sum(start=[]) | selectattr('ipv6_address', 'defined') | list
+        }}
+
+    - name: CONFIGURE DEFAULT ROUTES
+      cisco.ios.ios_static_routes:
+        config:
+          - address_families:
+              - afi: ipv4
+                routes:
+                  - dest: 0.0.0.0/0
+                    next_hops:
+                      - forward_router_address: "{{ default_routes.ipv4_next_hop }}"
+              - afi: ipv6
+                routes:
+                  - dest: ::/0
+                    next_hops:
+                      - forward_router_address: "{{ default_routes.ipv6_next_hop }}"
+
+    - name: CHECK IPV4 AND IPV6 DEFAULT ROUTE
+      cisco.ios.ios_ping:
+        dest: "{{ item.dest }}"
+        afi: "{{ item.afi }}"
+        count: 10
+        state: present
+      register: result
+      when: default_routes is defined
+      failed_when: result.packet_loss | int > 10
+      with_items:
+        - { dest: 9.9.9.9, afi: ip }
+        - { dest: 2620:fe::fe, afi: ipv6 }

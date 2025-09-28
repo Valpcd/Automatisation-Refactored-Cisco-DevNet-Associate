@@ -1,0 +1,40 @@
+---
+switches:
+  - name: dsw-host
+    ports:
+      - name: tap118 #R1 G1
+        type: OVSPort
+        vlan_mode: access
+        tag: 60
+      - name: tap319 #R1 G2
+        type: OVSPort
+        vlan_mode: trunk
+        trunks: [519, 517]
+      - name: tap316 #R1 G3
+        type: OVSPort
+        vlan_mode: trunk
+        trunks: []
+      - name: tap117 #R2 G1
+        type: OVSPort
+        vlan_mode: access
+        tag: 60
+      - name: tap318 #R2 G2
+        type: OVSPort
+        vlan_mode: trunk
+        trunks: [519, 518]
+      - name: tap315 #R2 G3
+        type: OVSPort
+        vlan_mode: trunk
+        trunks: []
+      - name: tap116 #R3 G1
+        type: OVSPort
+        vlan_mode: access
+        tag: 60
+      - name: tap317 #R3 G2
+        type: OVSPort
+        vlan_mode: trunk
+        trunks: [518, 517]
+      - name: tap115 #R3 G3 !!!!! acces -> pour ne pas empieter sur les tap de rami
+        type: OVSPort
+        vlan_mode: access
+        tag: 60

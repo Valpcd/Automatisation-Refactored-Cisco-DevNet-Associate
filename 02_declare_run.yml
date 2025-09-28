@@ -1,0 +1,196 @@
+---
+# The purpose of this playbook is to prepare and launch virtual routers on the hypervisor.
+# It performs the following steps:
+# 1. Check if the master image exists and copy it for each router.
+# 2. Create a YAML configuration file for each virtual machine.
+# 3. Assemble the individual YAML fragments into a single lab configuration file.
+# 4. Check if any VMs are already running to prevent duplicate instances.
+# 5. Launch the virtual machines using the lab configuration.
+# 6. Save the launch output for debugging and generate an inventory file.
+# The playbook is executed on the hypervisors group of hosts.
+
+- name: COPY MASTER IMAGE AND RUN ROUTERS
+  vars_files:
+    - host_vars/all.yml
+  vars:
+    masters_path: "{{ ansible_env.HOME }}/masters"
+    lab_path: "{{ ansible_env.HOME }}/vm/{{ lab_name }}"
+    lab_config_path: "{{ lab_path }}/lab.yaml"
+    fragments_dir: "{{ lab_path }}/fragments"
+    launch_output_file: "{{ lab_path }}/launch_output.log"
+    default_file_mode: "0644"
+    default_dir_mode: "0755"
+
+  hosts: hypervisors
+
+  tasks:
+    - name: CHECK IF MASTER IMAGE FILE EXISTS
+      ansible.builtin.stat:
+        path: "{{ masters_path }}/{{ image_name }}"
+      register: master_image_file
+
+    - name: COPY MASTER IMAGE TO LAB ROUTER IMAGES
+      ansible.builtin.copy:
+        src: "{{ masters_path }}/{{ image_name }}"
+        dest: "{{ lab_path }}/{{ item }}.qcow2"
+        mode: "{{ default_file_mode }}"
+        remote_src: true
+      when: master_image_file.stat.exists
+      failed_when: not master_image_file.stat.exists
+      with_inventory_hostnames:
+        - routers
+
+    - name: BUILD LAB DECLARATION YAML FILE
+      tags:
+        - yaml_labfile
+      block:
+        - name: CREATE FRAGMENTS DIRECTORY
+          ansible.builtin.file:
+            path: "{{ fragments_dir }}"
+            state: directory
+            mode: "{{ default_dir_mode }}"
+
+        - name: CREATE YAML HEADER FOR LAB CONFIGURATION
+          ansible.builtin.copy:
+            content: |
+              # Based on template at:
+              # https://gitlab.inetdoc.net/labs/startup-scripts/-/blob/main/templates/
+              kvm:
+                vms:
+            dest: "{{ fragments_dir }}/00_header_decl.yaml"
+            mode: "{{ default_file_mode }}"
+
+        - name: CREATE A YAML DECLARATION FOR EACH VIRTUAL MACHINE
+          ansible.builtin.template:
+            src: templates/lab.yaml.j2
+            dest: "{{ fragments_dir }}/{{ item }}_decl.yaml"
+            mode: "{{ default_file_mode }}"
+          with_items: "{{ groups['routers'] }}"
+          vars:
+            tapnumlist: "{{ hostvars[item].vrouter.tapnumlist }}"
+
+        - name: CHECK FOR CHANGES IN VIRTUAL MACHINE DECLARATIONS
+          ansible.builtin.find:
+            paths: "{{ fragments_dir }}"
+            patterns: "*_decl.yaml"
+          register: fragment_files
+
+        - name: CHECK LAB CONFIG FILE STATUS
+          ansible.builtin.stat:
+            path: "{{ lab_config_path }}"
+          register: lab_config_file
+
+        - name: MERGE YAML DECLARATIONS INTO LAB CONFIGURATION
+          ansible.builtin.assemble:
+            src: "{{ fragments_dir }}"
+            dest: "{{ lab_config_path }}"
+            mode: "{{ default_file_mode }}"
+          when: >-
+            fragment_files.matched > 0 and
+            (
+              not lab_config_file.stat.exists or
+              fragment_files.files | map(attribute='mtime') | max > lab_config_file.stat.mtime
+            )
+      rescue:
+        - name: HANDLE ERROR IN LAB CONFIGURATION
+          ansible.builtin.debug:
+            msg: An error occurred while building the lab configuration.
+      always:
+        - name: CLEANUP TEMPORARY FILES
+          ansible.builtin.file:
+            path: "{{ fragments_dir }}"
+            state: absent
+
+    - name: CHECK IF A VIRTUAL MACHINE ALREADY RUNS
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          if $(pgrep -af -U ${USER} | grep -q "={{ hostvars[item].vrouter.vm_name }}\.qcow2 "); then
+            echo "{{ hostvars[item].vrouter.vm_name }} is already running!"
+            exit 1
+          fi
+          exit 0
+        executable: /bin/bash
+      register: running_vm
+      changed_when: running_vm.rc != 0
+      failed_when: false
+      with_inventory_hostnames:
+        - routers
+      tags:
+        - launch_lab
+
+    - name: SET FACT FOR VMS STATUS
+      ansible.builtin.set_fact:
+        all_vms_stopped: "{{ (running_vm.results | map(attribute='rc') | select('eq', 0) | list | length == running_vm.results | length) }}"
+
+    - name: DELETE LAUNCH OUTPUT MESSAGES LOG FILE IF ALL VMS ARE STOPPED
+      ansible.builtin.file:
+        path: "{{ launch_output_file }}"
+        state: absent
+      when: all_vms_stopped
+      tags:
+        - launch_lab
+
+    - name: LAUNCH VIRTUAL MACHINE
+      ansible.builtin.command:
+        cmd: "$HOME/vm/scripts/lab-startup.py {{ lab_config_path }}"
+        chdir: "{{ lab_path }}"
+      register: launch
+      when: all_vms_stopped
+      failed_when: launch.rc != 0 and 'already' not in launch.stdout
+      changed_when: "' started!' in launch.stdout"
+      tags:
+        - launch_lab
+
+    - name: DEBUG LAUNCH OUTPUT
+      ansible.builtin.debug:
+        var: launch.stdout
+
+    - name: SET FACT FOR VMS STARTED
+      ansible.builtin.set_fact:
+        all_vms_started: "{{ (launch.stdout is defined and ' started!' in launch.stdout) }}"
+      when: launch is defined | default(true)
+
+    - name: HANDLE LAB INVENTORY GENERATION
+      tags:
+        - launch_lab
+      block:
+        - name: ENSURE TRACE AND INVENTORY DIRECTORIES EXIST
+          delegate_to: localhost
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "{{ default_dir_mode }}"
+          loop:
+            - trace
+            - inventory
+
+        - name: SAVE LAUNCH OUTPUT MESSAGES TO LOG FILE
+          ansible.builtin.copy:
+            content: "{{ launch.stdout | default('') }}\n{{ launch.stderr | default('') }}"
+            dest: "{{ launch_output_file }}"
+            mode: "{{ default_file_mode }}"
+          when: all_vms_started
+
+        - name: FETCH EXISTING LAUNCH OUTPUT IF VMS ARE RUNNING
+          ansible.builtin.fetch:
+            src: "{{ launch_output_file }}"
+            dest: trace/launch_output.log
+            flat: true
+            mode: "{{ default_file_mode }}"
+
+        - name: GENERATE NEW INVENTORY FILE
+          delegate_to: localhost
+          ansible.builtin.command:
+            cmd: /usr/bin/env python3 ./build_lab_inventory.py
+          register: command_result
+          changed_when: command_result.rc == 0
+      rescue:
+        - name: HANDLE ERROR IN LAB INVENTORY GENERATION
+          ansible.builtin.debug:
+            msg: An error occurred while building the lab inventory.
+      always:
+        - name: CLEANUP TEMPORARY FILES
+          ansible.builtin.file:
+            path: "{{ fragments_dir }}"
+            state: absent

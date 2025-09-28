@@ -1,0 +1,6 @@
+{
+  "ansible.python.interpreterPath": "/usr/bin/python3",
+  "ansible.ansible.path": "/home/etu/iac/lab03/ansible/bin/ansible",
+  "ansible.python.activationScript": "/home/etu/iac/lab03/ansible/bin/activate",
+  "ansible.validation.lint.path": "/home/etu/iac/lab03/ansible/bin/ansible-lint"
+}

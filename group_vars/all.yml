@@ -1,0 +1,6 @@
+---
+lab_name: iac-lab03
+image_name: c8000v-universalk9.17.16.01a.qcow2
+# oob_vlan: 60
+vm_user: "etu"
+vm_pass: "-etu-"

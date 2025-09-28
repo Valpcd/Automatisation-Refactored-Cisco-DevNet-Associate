@@ -1,0 +1,72 @@
+---
+- name: CLEAN UP LAB DIRECTORY
+  hosts: hypervisors
+  vars:
+    lab_path: "{{ ansible_env.HOME }}/vm/{{ lab_name }}"
+    launch_output_file: "{{ lab_path }}/launch_output.log"
+
+  tasks:
+    - name: CHECK IF LAB DIRECTORY EXISTS
+      ansible.builtin.stat:
+        path: "{{ lab_path }}"
+      register: lab_dir
+
+    - name: CHECK IF LAB OUTPUT FILE EXISTS
+      ansible.builtin.stat:
+        path: "{{ launch_output_file }}"
+      register: lab_output
+
+    - name: KILL ALL VMs IF LAB OUTPUT FILE EXISTS
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          # Remove ANSI escape codes from launch_output file
+          sed -i 's/\x1B\[[0-9;]*[JKmsu]//g' "{{ launch_output_file }}"
+          # Get telnet port numbers from launch_output file
+          telnet_ports=$(grep telnet "{{ launch_output_file }}" | cut -d ':' -f 2 | tr -d ' ')
+          # Test if telnet_ports variable is empty
+          if [[ -z "${telnet_ports}" ]]; then
+            echo "No telnet ports found"
+            exit 0
+          fi
+          # Loop through each switch
+          for tcp_port in ${telnet_ports}; do
+            # Stop the switch
+            kill $(lsof -ti tcp:${tcp_port})
+            echo "Stopped vm listening on port ${tcp_port}"
+          done
+          exit 0
+        executable: /bin/bash
+      register: stop
+      changed_when: '"Stopped" in stop.stdout'
+      failed_when: stop.rc != 0
+      when: lab_output.stat.exists
+
+    - name: DELETE LAB DIRECTORY
+      ansible.builtin.file:
+        path: "{{ lab_path }}"
+        state: absent
+      when: lab_dir.stat.exists
+
+- name: CLEAN UP LAB ARTEFACTS
+  hosts: localhost
+
+  tasks:
+    - name: REMOVE LAB INVENTORY FILE
+      ansible.builtin.file:
+        path: inventory/lab.yml
+        state: absent
+
+    - name: FIND TRACE FILES
+      ansible.builtin.find:
+        paths: trace
+        patterns:
+          - "*.log"
+          - "*.save"
+      register: trace_files
+
+    - name: REMOVE TRACE FILES
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      with_items: "{{ trace_files.files }}"

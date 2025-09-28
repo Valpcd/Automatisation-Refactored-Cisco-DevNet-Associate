@@ -1,0 +1,76 @@
+variables:
+  PIP_CACHE_DIR: $CI_PROJECT_DIR/.cache/pip
+  VAULT_FILE: /home/gitlab-runner/.iac.passwd
+
+cache:
+  paths:
+    - .cache/pip
+    - ansible/
+
+stages:
+  - Build
+  - Ping
+  - Prepare
+  - DeclareRun
+  - Configure
+  - OSPF
+
+# This job creates a virtual environment and installs the required packages
+# - ansible latest version
+# - ansible-lint latest version which is compatible with Python >= 3.12
+# - ansible-pylibssh as defined in ansible.cfg
+# - cisco.ios collection from Ansible Galaxy install or upgrade
+Build venv:
+  stage: Build
+  script:
+    - python3 -m venv ansible && source ./ansible/bin/activate && pip3 install -r requirements.txt
+    - ansible-galaxy collection install cisco.ios --upgrade
+
+Ping hypervisors:
+  stage: Ping
+  needs:
+    - Build venv
+  script:
+    - source ./ansible/bin/activate
+    - ansible hypervisors -m ping --extra-vars "@${VAULT_FILE}"
+
+Prepare hypervisors environment:
+  stage: Prepare
+  needs:
+    - Ping hypervisors
+  script:
+    - source ./ansible/bin/activate
+    - ansible-playbook 01_prepare.yml --extra-vars "@${VAULT_FILE}"
+
+Startup routers:
+  stage: DeclareRun
+  artifacts:
+    paths:
+      - inventory/
+  needs:
+    - Prepare hypervisors environment
+  script:
+    - source ./ansible/bin/activate
+    - ansible-playbook 02_declare_run.yml --extra-vars "@${VAULT_FILE}"
+
+Configure routers:
+  stage: Configure
+  artifacts:
+    paths:
+      - inventory/
+  needs:
+    - Startup routers
+  script:
+    - source ./ansible/bin/activate
+    - ansible-playbook 03_configure_routers.yml --extra-vars "@${VAULT_FILE}"
+
+Configure OSPF & Testing:
+  stage: OSPF
+  artifacts:
+    paths:
+      - inventory/
+  needs:
+    - Configure routers
+  script:
+    - source ./ansible/bin/activate
+    - ansible-playbook 04_configure_ospf.yml --extra-vars "@${VAULT_FILE}"

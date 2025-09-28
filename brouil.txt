@@ -1,0 +1,21 @@
+hypervisor_user: pacaudvalerian
+hypervisor_pass: JclnhhOFewBuGLgh
+vm_user: etu
+vm_pass: -etu-
+
+source ./ansible/bin/activate
+
+git config --global user.name "pacaud.valerian"
+git config --global user.email pacaud.valerian@gmail.com
+git config --global init.defaultBranch main
+
+
+sudo gitlab-runner register --non-interactive \
+    --executor "shell" \
+    --url https://gitlab.inetdoc.net \
+    --token glrt-t2_Y11FzWmJWME7Kn3VAM6w
+
+sudo gitlab-runner register --non-interactive \
+    --executor "shell" \
+    --url "https://gitlab.inetdoc.net/" \
+    --token "glrt-t2_Y11FzWmJWME7Kn3VAM6w"

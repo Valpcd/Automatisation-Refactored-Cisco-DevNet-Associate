@@ -1,0 +1,19 @@
+# Based on template at:
+# https://gitlab.inetdoc.net/labs/startup-scripts/-/blob/main/templates/switch.yaml
+
+ovs:
+  switches:
+{% for switch in switches %}
+    - name: {{ switch.name }}
+      ports:
+{% for port in switch.ports %}
+        - name: {{ port.name }}
+          type: {{ port.type }}
+          vlan_mode: {{ port.vlan_mode }}
+{% if port.vlan_mode == 'trunk' %}
+          trunks: {{ port.trunks }}
+{% elif port.vlan_mode == 'access' %}
+          tag: {{ port.tag }}
+{% endif %}
+{% endfor %}
+{% endfor %}
